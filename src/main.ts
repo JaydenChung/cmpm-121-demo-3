@@ -11,6 +11,9 @@ const INITIAL_PLAYER_POSITION = leaflet.latLng(36.9895, -122.0628); // Starting 
 let score = 0; // Player score
 let inventoryCoins = 0; // Player's collected coins
 
+// Map to store unique cells using the Flyweight pattern
+const cellCache = new Map<string, { i: number; j: number }>();
+
 // Initialize the map with specific options
 const map = leaflet.map("map", {
   center: INITIAL_PLAYER_POSITION,
@@ -33,6 +36,24 @@ const _playerMarker = leaflet.marker(INITIAL_PLAYER_POSITION).addTo(map);
 const statusElement = document.querySelector("#statusPanel")!;
 const inventoryElement = document.querySelector("#inventory")!;
 
+// Flyweight pattern: Convert latitude–longitude to grid cells
+function getCell(lat: number, lng: number) {
+  const i = Math.floor(lat * 1e4); // Scale latitude
+  const j = Math.floor(lng * 1e4); // Scale longitude
+  const cellKey = `${i}:${j}`;
+
+  // If cell doesn't exist, add it to the cache
+  if (!cellCache.has(cellKey)) {
+    cellCache.set(cellKey, { i, j });
+  }
+  return cellCache.get(cellKey)!;
+}
+
+// Unique identifier for each coin based on cache location
+function getCoinID(cell: { i: number; j: number }, serial: number) {
+  return `${cell.i}:${cell.j}#${serial}`;
+}
+
 // Update the player’s status display
 function refreshStatus() {
   statusElement.innerHTML = `Points: ${score}`;
@@ -42,6 +63,10 @@ function refreshStatus() {
 // Spawn caches around player within a specified area radius
 function createCache(x: number, y: number) {
   const base = INITIAL_PLAYER_POSITION;
+  const cell = getCell(
+    base.lat + x * TILE_SIZE_INCREMENT,
+    base.lng + y * TILE_SIZE_INCREMENT,
+  );
   const areaBounds = leaflet.latLngBounds([
     [base.lat + x * TILE_SIZE_INCREMENT, base.lng + y * TILE_SIZE_INCREMENT],
     [
@@ -51,37 +76,44 @@ function createCache(x: number, y: number) {
   ]);
 
   const cacheRectangle = leaflet.rectangle(areaBounds).addTo(map);
-  let cacheAmount = Math.floor(Math.random() * 5) + 1; // Generate between 1-5 coins
+  const cacheCoins = Math.floor(Math.random() * 5) + 1; // Between 1-5 coins
+  let coinSerial = 0;
 
   // Setup cache popup details
   cacheRectangle.bindPopup(() => {
     const popupContent = document.createElement("div");
     popupContent.innerHTML = `
-      <div>Cache located at (${x},${y})</div>
-      <div>Coins: <span id="coinDisplay">${cacheAmount}</span></div>
+      <div>Cache located at (${cell.i},${cell.j})</div>
+      <div>Coins:</div>
+      <ul id="coinList"></ul>
       <button id="collectBtn">Collect Coins</button>
       <button id="depositBtn">Deposit Coins</button>
     `;
 
+    // Display unique coin IDs in compact format for user readability
+    const coinList = popupContent.querySelector("#coinList")!;
+    for (let i = 0; i < cacheCoins; i++) {
+      const coinID = getCoinID(cell, coinSerial++);
+      const listItem = document.createElement("li");
+      listItem.textContent = `Coin ID: ${coinID}`;
+      coinList.appendChild(listItem);
+    }
+
     // Collect coins event
     popupContent.querySelector("#collectBtn")!.addEventListener("click", () => {
-      if (cacheAmount > 0) {
-        inventoryCoins += cacheAmount;
-        cacheAmount = 0;
+      if (cacheCoins > 0) {
+        inventoryCoins += cacheCoins;
         refreshStatus();
-        popupContent.querySelector("#coinDisplay")!.textContent = "0";
+        coinList.innerHTML = ""; // Clear coin list on collection
       }
     });
 
     // Deposit coins event
     popupContent.querySelector("#depositBtn")!.addEventListener("click", () => {
       if (inventoryCoins > 0) {
-        cacheAmount += inventoryCoins;
         score += inventoryCoins;
         inventoryCoins = 0;
         refreshStatus();
-        popupContent.querySelector("#coinDisplay")!.textContent =
-          `${cacheAmount}`;
       }
     });
 
