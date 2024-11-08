@@ -11,9 +11,6 @@ const INITIAL_PLAYER_POSITION = leaflet.latLng(36.9895, -122.0628); // Starting 
 let score = 0; // Player score
 let inventoryCoins = 0; // Player's collected coins
 
-// Map to store unique cells using the Flyweight pattern
-const cellCache = new Map<string, { i: number; j: number }>();
-
 // Initialize the map with specific options
 const map = leaflet.map("map", {
   center: INITIAL_PLAYER_POSITION,
@@ -36,23 +33,11 @@ const _playerMarker = leaflet.marker(INITIAL_PLAYER_POSITION).addTo(map);
 const statusElement = document.querySelector("#statusPanel")!;
 const inventoryElement = document.querySelector("#inventory")!;
 
-// Flyweight pattern: Convert latitude–longitude to grid cells
-function getCell(lat: number, lng: number) {
-  const i = Math.floor(lat * 1e4); // Scale latitude
-  const j = Math.floor(lng * 1e4); // Scale longitude
-  const cellKey = `${i}:${j}`;
+// Map to store unique cells using the Flyweight pattern
+const knownTiles = new Map<string, { i: number; j: number }>();
 
-  // If cell doesn't exist, add it to the cache
-  if (!cellCache.has(cellKey)) {
-    cellCache.set(cellKey, { i, j });
-  }
-  return cellCache.get(cellKey)!;
-}
-
-// Unique identifier for each coin based on cache location
-function getCoinID(cell: { i: number; j: number }, serial: number) {
-  return `${cell.i}:${cell.j}#${serial}`;
-}
+// Set to store unique coins
+const coins = new Set<{ i: number; j: number; serial: number }>();
 
 // Update the player’s status display
 function refreshStatus() {
@@ -60,7 +45,25 @@ function refreshStatus() {
   inventoryElement.innerHTML = `Inventory: ${inventoryCoins} coins`;
 }
 
-// Spawn caches around player within a specified area radius
+// Flyweight pattern: Convert latitude–longitude to grid cells
+function getCell(lat: number, lng: number) {
+  const i = Math.floor(lat * 1e4); // Scale latitude
+  const j = Math.floor(lng * 1e4); // Scale longitude
+  const cellKey = `${i}:${j}`;
+
+  // If cell doesn't exist, add it to knownTiles
+  if (!knownTiles.has(cellKey)) {
+    knownTiles.set(cellKey, { i, j });
+  }
+  return knownTiles.get(cellKey)!;
+}
+
+// Unique identifier for each coin based on cache location
+function getCoinID(cell: { i: number; j: number }, serial: number) {
+  return `${cell.i}:${cell.j}#${serial}`;
+}
+
+// Modified cache creation to generate unique coin objects
 function createCache(x: number, y: number) {
   const base = INITIAL_PLAYER_POSITION;
   const cell = getCell(
@@ -77,7 +80,15 @@ function createCache(x: number, y: number) {
 
   const cacheRectangle = leaflet.rectangle(areaBounds).addTo(map);
   const cacheCoins = Math.floor(Math.random() * 5) + 1; // Between 1-5 coins
+
+  // Generate unique coins
   let coinSerial = 0;
+  const cacheCoinsList: string[] = [];
+  for (let i = 0; i < cacheCoins; i++) {
+    const coin = { i: cell.i, j: cell.j, serial: coinSerial++ };
+    coins.add(coin);
+    cacheCoinsList.push(getCoinID(cell, coin.serial));
+  }
 
   // Setup cache popup details
   cacheRectangle.bindPopup(() => {
@@ -92,19 +103,19 @@ function createCache(x: number, y: number) {
 
     // Display unique coin IDs in compact format for user readability
     const coinList = popupContent.querySelector("#coinList")!;
-    for (let i = 0; i < cacheCoins; i++) {
-      const coinID = getCoinID(cell, coinSerial++);
+    cacheCoinsList.forEach((coinID) => {
       const listItem = document.createElement("li");
       listItem.textContent = `Coin ID: ${coinID}`;
       coinList.appendChild(listItem);
-    }
+    });
 
     // Collect coins event
     popupContent.querySelector("#collectBtn")!.addEventListener("click", () => {
-      if (cacheCoins > 0) {
-        inventoryCoins += cacheCoins;
+      if (cacheCoinsList.length > 0) {
+        inventoryCoins += cacheCoinsList.length;
+        cacheCoinsList.length = 0; // Clear coins from cache
         refreshStatus();
-        coinList.innerHTML = ""; // Clear coin list on collection
+        coinList.innerHTML = "No coins left.";
       }
     });
 
