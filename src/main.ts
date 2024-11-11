@@ -1,149 +1,247 @@
-// Import necessary libraries and styles
-import leaflet from "leaflet";
+import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 
-// Constants for game configuration
-const TILE_SIZE_INCREMENT = 1e-4; // Defines tile size
-const AREA_RADIUS = 8; // Defines cache spawn radius around player
-const CACHE_PROBABILITY = 0.1; // Probability for cache generation
-const INITIAL_PLAYER_POSITION = leaflet.latLng(36.9895, -122.0628); // Starting point
-let score = 0; // Player score
-let inventoryCoins = 0; // Player's collected coins
+// Constants and variables
+const TILE_DEGREES = 1e-4; // Tile size increment
+const NEIGHBORHOOD_SIZE = 8; // Size of area for cache generation
+const CACHE_SPAWN_PROBABILITY = 0.1; // Chance of spawning a cache
+const NULL_ISLAND = L.latLng(0, 0); // Null Island as a geodetic datum reference point
+const _PLAYER_START = L.latLng(36.9895, -122.0628);
+let playerPoints = 0; // Player's score
+let playerInventory = 0; // Player's coin count
 
-// Initialize the map with specific options
-const map = leaflet.map("map", {
-  center: INITIAL_PLAYER_POSITION,
+// Initialize map
+const map = L.map("map", {
+  center: NULL_ISLAND,
   zoom: 19,
-  zoomControl: false,
-  scrollWheelZoom: false,
+  zoomControl: true,
+  scrollWheelZoom: true,
 });
 
-// Tile layer using OpenStreetMap
-leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+// Add OpenStreetMap tiles
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution:
     'Map data &copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
 }).addTo(map);
 
-// Add player marker to starting location
-const _playerMarker = leaflet.marker(INITIAL_PLAYER_POSITION).addTo(map);
+// Status and Inventory updates
+const statusPanel = document.querySelector("#statusPanel");
+const inventoryPanel = document.querySelector("#inventory");
 
-// Get status and inventory panels for updating
-const statusElement = document.querySelector("#statusPanel")!;
-const inventoryElement = document.querySelector("#inventory")!;
+const playerMarker = L.marker(NULL_ISLAND).addTo(map);
+playerMarker.bindTooltip("That's you!");
 
-// Map to store unique cells using the Flyweight pattern
-const knownTiles = new Map<string, { i: number; j: number }>();
-
-// Set to store unique coins
-const coins = new Set<{ i: number; j: number; serial: number }>();
-
-// Update the player’s status display
-function refreshStatus() {
-  statusElement.innerHTML = `Points: ${score}`;
-  inventoryElement.innerHTML = `Inventory: ${inventoryCoins} coins`;
-}
-
-// Flyweight pattern: Convert latitude–longitude to grid cells
-function getCell(lat: number, lng: number) {
-  const i = Math.floor(lat * 1e4); // Scale latitude
-  const j = Math.floor(lng * 1e4); // Scale longitude
-  const cellKey = `${i}:${j}`;
-
-  // If cell doesn't exist, add it to knownTiles
-  if (!knownTiles.has(cellKey)) {
-    knownTiles.set(cellKey, { i, j });
+// Function to update status display
+function updateStatus() {
+  if (statusPanel) statusPanel.innerHTML = `Points: ${playerPoints}`;
+  if (inventoryPanel) {
+    inventoryPanel.innerHTML = `Inventory: ${playerInventory} coins`;
   }
-  return knownTiles.get(cellKey)!;
 }
 
-// Unique identifier for each coin based on cache location
-function getCoinID(cell: { i: number; j: number }, serial: number) {
-  return `${cell.i}:${cell.j}#${serial}`;
+// Location Factory using Flyweight Pattern
+class LocationFactory {
+  private locations: { [key: string]: L.LatLng } = {};
+
+  getLocation(lat: number, lng: number): L.LatLng {
+    const key = `${lat},${lng}`;
+    if (!this.locations[key]) {
+      this.locations[key] = L.latLng(lat, lng);
+    }
+    return this.locations[key];
+  }
 }
 
-// Modified cache creation to generate unique coin objects
-function createCache(x: number, y: number) {
-  const base = INITIAL_PLAYER_POSITION;
-  const cell = getCell(
-    base.lat + x * TILE_SIZE_INCREMENT,
-    base.lng + y * TILE_SIZE_INCREMENT,
+const locationFactory = new LocationFactory(); // Instantiate the factory
+
+// Coin as a non-fungible token representation
+type Coin = { i: number; j: number; serial: number }; // Unique ID based on cache coordinates and serial
+let coinIdCounter = 0; // Global counter to ensure unique coin serials
+
+// Cache Memento class to store the state
+class CacheMemento {
+  constructor(public cacheCoins: Coin[]) {}
+}
+
+class Cache {
+  private coins: Coin[] = [];
+  public memento?: CacheMemento;
+
+  constructor(public i: number, public j: number) {}
+
+  saveState(): CacheMemento {
+    this.memento = new CacheMemento([...this.coins]);
+    return this.memento;
+  }
+
+  restoreState(memento: CacheMemento) {
+    this.coins = memento.cacheCoins;
+  }
+
+  addCoins(coins: Coin[]) {
+    this.coins.push(...coins);
+  }
+
+  collectCoins() {
+    const collectedCoins = this.coins.length;
+    this.coins = [];
+    return collectedCoins;
+  }
+
+  get coinCount() {
+    return this.coins.length;
+  }
+}
+
+const cacheMap: Map<string, Cache> = new Map();
+
+function spawnCache(i: number, j: number) {
+  const key = `${i},${j}`;
+  const cache = new Cache(i, j);
+  cacheMap.set(key, cache);
+
+  const cacheCoins = Array.from(
+    { length: Math.floor(Math.random() * 5) + 1 },
+    (_, serial) => ({ i, j, serial }),
   );
-  const areaBounds = leaflet.latLngBounds([
-    [base.lat + x * TILE_SIZE_INCREMENT, base.lng + y * TILE_SIZE_INCREMENT],
-    [
-      base.lat + (x + 1) * TILE_SIZE_INCREMENT,
-      base.lng + (y + 1) * TILE_SIZE_INCREMENT,
-    ],
+  cache.addCoins(cacheCoins);
+
+  const origin = NULL_ISLAND;
+  const lat = origin.lat + i * TILE_DEGREES;
+  const lng = origin.lng + j * TILE_DEGREES;
+
+  const bounds = L.latLngBounds([
+    locationFactory.getLocation(lat, lng),
+    locationFactory.getLocation(lat + TILE_DEGREES, lng + TILE_DEGREES),
   ]);
 
-  const cacheRectangle = leaflet.rectangle(areaBounds).addTo(map);
-  const cacheCoins = Math.floor(Math.random() * 5) + 1; // Between 1-5 coins
-
-  // Generate unique coins
-  let coinSerial = 0;
-  const cacheCoinsList: string[] = [];
-  for (let i = 0; i < cacheCoins; i++) {
-    const coin = { i: cell.i, j: cell.j, serial: coinSerial++ };
-    coins.add(coin);
-    cacheCoinsList.push(getCoinID(cell, coin.serial));
-  }
-
-  // Setup cache popup details
-  cacheRectangle.bindPopup(() => {
-    const popupContent = document.createElement("div");
-    popupContent.innerHTML = `
-      <div>Cache located at (${cell.i},${cell.j})</div>
-      <div>Coins:</div>
-      <ul id="coinList"></ul>
-      <button id="collectBtn">Collect Coins</button>
-      <button id="depositBtn">Deposit Coins</button>
+  const rect = L.rectangle(bounds).addTo(map);
+  rect.bindPopup(() => {
+    const popupDiv = document.createElement("div");
+    popupDiv.innerHTML = `
+      <div>Cache at (${i},${j})</div>
+      <div>Coins available: <span id="coinCount">${cache.coinCount}</span></div>
+      <button id="collectCoins">Collect</button>
+      <button id="depositCoins">Deposit</button>
     `;
 
-    // Display unique coin IDs in compact format for user readability
-    const coinList = popupContent.querySelector("#coinList")!;
-    cacheCoinsList.forEach((coinID) => {
-      const listItem = document.createElement("li");
-      listItem.textContent = `Coin ID: ${coinID}`;
-      coinList.appendChild(listItem);
-    });
-
-    // Collect coins event
-    popupContent.querySelector("#collectBtn")!.addEventListener("click", () => {
-      if (cacheCoinsList.length > 0) {
-        inventoryCoins += cacheCoinsList.length;
-        cacheCoinsList.length = 0; // Clear coins from cache
-        refreshStatus();
-        coinList.innerHTML = "No coins left.";
+    popupDiv.querySelector("#collectCoins")?.addEventListener("click", () => {
+      if (cache.coinCount > 0) {
+        playerInventory += cache.collectCoins();
+        updateStatus();
+        popupDiv.querySelector("#coinCount")!.textContent = "0";
       }
     });
 
-    // Deposit coins event
-    popupContent.querySelector("#depositBtn")!.addEventListener("click", () => {
-      if (inventoryCoins > 0) {
-        score += inventoryCoins;
-        inventoryCoins = 0;
-        refreshStatus();
+    popupDiv.querySelector("#depositCoins")?.addEventListener("click", () => {
+      if (playerInventory > 0) {
+        const depositCoins = Array.from(
+          { length: playerInventory },
+          (_, _serial) => ({ i, j, serial: coinIdCounter++ }),
+        );
+        cache.addCoins(depositCoins);
+        playerPoints += playerInventory;
+        playerInventory = 0;
+        updateStatus();
+        popupDiv.querySelector("#coinCount")!.textContent =
+          `${cache.coinCount}`;
       }
     });
 
-    return popupContent; // Return generated popup content
+    return popupDiv;
   });
 }
 
-// Populate neighborhood area with random caches
-for (let x = -AREA_RADIUS; x <= AREA_RADIUS; x++) {
-  for (let y = -AREA_RADIUS; y <= AREA_RADIUS; y++) {
-    if (Math.random() < CACHE_PROBABILITY) {
-      createCache(x, y); // Place cache if random probability is met
+function movePlayer(dx: number, dy: number) {
+  const newLat = playerMarker.getLatLng().lat + dy;
+  const newLng = playerMarker.getLatLng().lng + dx;
+  const newPos = locationFactory.getLocation(newLat, newLng);
+  playerMarker.setLatLng(newPos);
+
+  regenerateCachesAround(newPos);
+  map.panTo(newPos);
+}
+
+function regenerateCachesAround(playerPos: L.LatLng) {
+  map.eachLayer((layer: L.Layer) => {
+    if (layer instanceof L.Rectangle) {
+      map.removeLayer(layer);
+    }
+  });
+
+  const playerI = Math.floor((playerPos.lat - NULL_ISLAND.lat) / TILE_DEGREES);
+  const playerJ = Math.floor((playerPos.lng - NULL_ISLAND.lng) / TILE_DEGREES);
+
+  for (
+    let i = playerI - NEIGHBORHOOD_SIZE;
+    i <= playerI + NEIGHBORHOOD_SIZE;
+    i++
+  ) {
+    for (
+      let j = playerJ - NEIGHBORHOOD_SIZE;
+      j <= playerJ + NEIGHBORHOOD_SIZE;
+      j++
+    ) {
+      const key = `${i},${j}`;
+
+      if (cacheMap.has(key)) {
+        const cache = cacheMap.get(key)!;
+        if (cache.memento) {
+          cache.restoreState(cache.memento);
+        }
+        spawnCache(i, j);
+      } else if (Math.random() < CACHE_SPAWN_PROBABILITY) {
+        spawnCache(i, j);
+      }
+    }
+  }
+
+  cacheMap.forEach((cache, key) => {
+    const cacheLatLng = locationFactory.getLocation(
+      NULL_ISLAND.lat + cache.i * TILE_DEGREES,
+      NULL_ISLAND.lng + cache.j * TILE_DEGREES,
+    );
+    if (
+      playerPos.distanceTo(cacheLatLng) > TILE_DEGREES * NEIGHBORHOOD_SIZE * 2
+    ) {
+      cache.saveState();
+      cacheMap.delete(key);
+    }
+  });
+}
+
+// Event listeners for movement buttons
+document.querySelector("#moveUp")?.addEventListener(
+  "click",
+  () => movePlayer(0, TILE_DEGREES),
+);
+document.querySelector("#moveDown")?.addEventListener(
+  "click",
+  () => movePlayer(0, -TILE_DEGREES),
+);
+document.querySelector("#moveLeft")?.addEventListener(
+  "click",
+  () => movePlayer(-TILE_DEGREES, 0),
+);
+document.querySelector("#moveRight")?.addEventListener(
+  "click",
+  () => movePlayer(TILE_DEGREES, 0),
+);
+
+// Initial cache generation
+for (let i = -NEIGHBORHOOD_SIZE; i <= NEIGHBORHOOD_SIZE; i++) {
+  for (let j = -NEIGHBORHOOD_SIZE; j <= NEIGHBORHOOD_SIZE; j++) {
+    if (Math.random() < CACHE_SPAWN_PROBABILITY) {
+      spawnCache(i, j);
     }
   }
 }
 
-// Event listener for resetting player state
-document.querySelector("#resetGame")!.addEventListener("click", () => {
-  score = 0; // Reset score
-  inventoryCoins = 0; // Clear inventory
-  refreshStatus(); // Update the UI
+// Reset game
+document.querySelector("#resetGame")?.addEventListener("click", () => {
+  playerPoints = 0;
+  playerInventory = 0;
+  updateStatus();
 });
