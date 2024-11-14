@@ -2,6 +2,8 @@ import leaflet from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 
+import luck from "./luck.ts";
+
 // Constants and variables
 const TILE_DEGREES = 1e-4; // Tile size increment
 const NEIGHBORHOOD_SIZE = 8; // Size of area for cache generation
@@ -27,15 +29,13 @@ leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 // Status and Inventory updates
-const statusPanel = document.querySelector("#statusPanel");
 const inventoryPanel = document.querySelector("#inventory");
 
 const playerMarker = leaflet.marker(NULL_ISLAND).addTo(map);
 playerMarker.bindTooltip("That's you!");
 
-// Function to update status display
+// Function to update status display 111
 function updateStatus() {
-  if (statusPanel) statusPanel.innerHTML = `Points: ${playerPoints}`;
   if (inventoryPanel) {
     inventoryPanel.innerHTML = `Inventory: ${playerInventory} coins`;
   }
@@ -212,7 +212,22 @@ function regenerateCachesAround(playerPos: leaflet.LatLng) {
   });
 }
 
-// Event listeners for movement buttons
+// Button definitions for controlling movement
+
+// Add a marker to represent the player
+const savedPosition = localStorage.getItem("playerPosition");
+let _playerPosI: number;
+let _playerPosJ: number;
+if (savedPosition) {
+  // If a position was saved in localStorage, use it to update the player's position
+  const position = JSON.parse(savedPosition);
+  _playerPosI = position.lat;
+  _playerPosJ = position.lng;
+} else {
+  _playerPosI = _PLAYER_START.lat;
+  _playerPosJ = _PLAYER_START.lng;
+}
+
 document.querySelector("#moveUp")?.addEventListener(
   "click",
   () => movePlayer(0, TILE_DEGREES),
@@ -229,6 +244,56 @@ document.querySelector("#moveRight")?.addEventListener(
   "click",
   () => movePlayer(TILE_DEGREES, 0),
 );
+document.querySelector("#teleport")?.addEventListener(
+  "click",
+  () =>
+    navigator.geolocation.getCurrentPosition(onLocationFound, onLocationError),
+);
+
+document.querySelector("#reset")?.addEventListener(
+  "click",
+  () => {
+    if (confirm("Are you sure you want to reset all progress?")) {
+      localStorage.setItem(
+        "playerPosition",
+        JSON.stringify({ lat: _PLAYER_START.lat, lng: _PLAYER_START.lng }),
+      );
+      _playerPosI = _PLAYER_START.lat;
+      _playerPosJ = _PLAYER_START.lng;
+      playerMarker.setLatLng(
+        leaflet.latLng(_PLAYER_START.lat, _PLAYER_START.lng),
+      );
+      map.panTo(leaflet.latLng(_PLAYER_START.lat, _PLAYER_START.lng));
+      updateNeighborhood(leaflet.latLng(_PLAYER_START.lat, _PLAYER_START.lng));
+      playerPoints = 0;
+    }
+    for (let i = -NEIGHBORHOOD_SIZE; i <= NEIGHBORHOOD_SIZE; i++) {
+      for (let j = -NEIGHBORHOOD_SIZE; j <= NEIGHBORHOOD_SIZE; j++) {
+        if (Math.random() < CACHE_SPAWN_PROBABILITY) {
+          spawnCache(i, j);
+        }
+      }
+    }
+  },
+);
+
+function onLocationFound(position: GeolocationPosition) {
+  playerMarker.setLatLng(
+    leaflet.latLng(position.coords.latitude, position.coords.longitude),
+  );
+  _playerPosI = position.coords.latitude;
+  _playerPosJ = position.coords.longitude;
+  map.panTo(
+    leaflet.latLng(position.coords.latitude, position.coords.longitude),
+  );
+  updateNeighborhood(
+    leaflet.latLng(position.coords.latitude, position.coords.longitude),
+  );
+}
+
+function onLocationError() {
+  alert(`can't find location`);
+}
 
 // Initial cache generation
 for (let i = -NEIGHBORHOOD_SIZE; i <= NEIGHBORHOOD_SIZE; i++) {
@@ -245,3 +310,37 @@ document.querySelector("#resetGame")?.addEventListener("click", () => {
   playerInventory = 0;
   updateStatus();
 });
+
+updateNeighborhood(_PLAYER_START);
+
+function updateNeighborhood(center: leaflet.LatLng) {
+  cleanupOldCaches(); //Wipe caches first
+  // Define a new neighborhood area around the player
+  const new_i = Math.floor((center.lat - _PLAYER_START.lat) * 10000);
+  const new_j = Math.floor((center.lng - _PLAYER_START.lng) * 10000);
+
+  // Define a new neighborhood area around the player
+  const newNeighborhood = new Set<string>(); // Store grid coordinates of new caches
+
+  // Spawn new caches in the player's neighborhood (around the new coordinates)
+  for (let i = new_i - NEIGHBORHOOD_SIZE; i <= new_i + NEIGHBORHOOD_SIZE; i++) {
+    for (
+      let j = new_j - NEIGHBORHOOD_SIZE;
+      j <= new_j + NEIGHBORHOOD_SIZE;
+      j++
+    ) {
+      if (luck([i, j].toString()) < CACHE_SPAWN_PROBABILITY) {
+        spawnCache(i, j); // Call function to spawn a cache in this grid cell
+      }
+      newNeighborhood.add(`${i},${j}`);
+    }
+  }
+}
+
+function cleanupOldCaches() {
+  map.eachLayer(function (layer: leaflet.layer) {
+    if (layer instanceof leaflet.Rectangle) {
+      map.removeLayer(layer);
+    }
+  });
+}
