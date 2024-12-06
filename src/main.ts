@@ -95,6 +95,156 @@ class Cache {
   }
 }
 
+class CacheManager {
+  private cacheMap: Map<string, Cache> = new Map();
+
+  constructor(
+    private map: leaflet.Map,
+    private locationFactory: LocationFactory,
+    private tileDegrees: number,
+    private spawnProbability: number,
+  ) {}
+
+  public spawnCache(i: number, j: number): void {
+    const key = `${i},${j}`;
+    const cache = new Cache(i, j);
+    this.cacheMap.set(key, cache);
+
+    const cacheCoins = Array.from(
+      { length: Math.floor(Math.random() * 5) + 1 },
+      (_, serial) => ({ i, j, serial }),
+    );
+    cache.addCoins(cacheCoins);
+
+    const origin = NULL_ISLAND;
+    const lat = origin.lat + i * this.tileDegrees;
+    const lng = origin.lng + j * this.tileDegrees;
+
+    const bounds = leaflet.latLngBounds([
+      this.locationFactory.getLocation(lat, lng),
+      this.locationFactory.getLocation(
+        lat + this.tileDegrees,
+        lng + this.tileDegrees,
+      ),
+    ]);
+
+    const rect = leaflet.rectangle(bounds).addTo(this.map);
+    rect.bindPopup(() => {
+      const popupDiv = document.createElement("div");
+      popupDiv.innerHTML = `
+        <div>Cache at (${i},${j})</div>
+        <div>Coins available: <span id="coinCount">${cache.coinCount}</span></div>
+        <button id="collectCoins">Collect</button>
+        <button id="depositCoins">Deposit</button>
+      `;
+
+      popupDiv.querySelector("#collectCoins")?.addEventListener("click", () => {
+        if (cache.coinCount > 0) {
+          playerInventory += cache.collectCoins();
+          updateStatus();
+          popupDiv.querySelector("#coinCount")!.textContent = "0";
+        }
+      });
+
+      popupDiv.querySelector("#depositCoins")?.addEventListener("click", () => {
+        if (playerInventory > 0) {
+          const depositCoins = Array.from(
+            { length: playerInventory },
+            (_, _serial) => ({ i, j, serial: coinIdCounter++ }),
+          );
+          cache.addCoins(depositCoins);
+          playerPoints += playerInventory;
+          playerInventory = 0;
+          updateStatus();
+          popupDiv.querySelector("#coinCount")!.textContent =
+            `${cache.coinCount}`;
+        }
+      });
+
+      return popupDiv;
+    });
+  }
+
+  public regenerateCachesAround(playerPos: leaflet.LatLng): void {
+    this.cleanupOldCaches();
+
+    const playerI = Math.floor(
+      (playerPos.lat - NULL_ISLAND.lat) / this.tileDegrees,
+    );
+    const playerJ = Math.floor(
+      (playerPos.lng - NULL_ISLAND.lng) / this.tileDegrees,
+    );
+
+    for (
+      let i = playerI - NEIGHBORHOOD_SIZE;
+      i <= playerI + NEIGHBORHOOD_SIZE;
+      i++
+    ) {
+      for (
+        let j = playerJ - NEIGHBORHOOD_SIZE;
+        j <= playerJ + NEIGHBORHOOD_SIZE;
+        j++
+      ) {
+        const key = `${i},${j}`;
+
+        if (this.cacheMap.has(key)) {
+          const cache = this.cacheMap.get(key)!;
+          if (cache.memento) {
+            cache.restoreState(cache.memento);
+          }
+        } else if (Math.random() < this.spawnProbability) {
+          this.spawnCache(i, j);
+        }
+      }
+    }
+
+    // Save states and delete caches far from the player
+    this.cacheMap.forEach((cache, key) => {
+      const cacheLatLng = this.locationFactory.getLocation(
+        NULL_ISLAND.lat + cache.i * this.tileDegrees,
+        NULL_ISLAND.lng + cache.j * this.tileDegrees,
+      );
+      if (
+        playerPos.distanceTo(cacheLatLng) >
+          this.tileDegrees * NEIGHBORHOOD_SIZE * 2
+      ) {
+        cache.saveState();
+        this.cacheMap.delete(key);
+      }
+    });
+  }
+
+  public cleanupOldCaches(): void {
+    this.map.eachLayer((layer: L.Layer) => {
+      if (layer instanceof leaflet.Rectangle) {
+        this.map.removeLayer(layer);
+      }
+    });
+  }
+}
+
+// Instantiate CacheManager
+const cacheManager = new CacheManager(
+  map,
+  locationFactory,
+  TILE_DEGREES,
+  CACHE_SPAWN_PROBABILITY,
+);
+
+// Update movePlayer to use CacheManager
+function movePlayer(dx: number, dy: number): void {
+  const newLat = playerMarker.getLatLng().lat + dy;
+  const newLng = playerMarker.getLatLng().lng + dx;
+  const newPos = locationFactory.getLocation(newLat, newLng);
+  playerMarker.setLatLng(newPos);
+
+  cacheManager.regenerateCachesAround(newPos); // Delegate responsibility
+  map.panTo(newPos);
+}
+
+// Use CacheManager initially to spawn caches
+cacheManager.regenerateCachesAround(_PLAYER_START);
+
 const cacheMap: Map<string, Cache> = new Map();
 
 function spawnCache(i: number, j: number) {
@@ -154,63 +304,53 @@ function spawnCache(i: number, j: number) {
   });
 }
 
-function movePlayer(dx: number, dy: number) {
-  const newLat = playerMarker.getLatLng().lat + dy;
-  const newLng = playerMarker.getLatLng().lng + dx;
-  const newPos = locationFactory.getLocation(newLat, newLng);
-  playerMarker.setLatLng(newPos);
+// function regenerateCachesAround(playerPos: leaflet.LatLng) {
+//   map.eachLayer((layer: L.Layer) => {
+//     if (layer instanceof leaflet.Rectangle) {
+//       map.removeLayer(layer);
+//     }
+//   });
 
-  regenerateCachesAround(newPos);
-  map.panTo(newPos);
-}
+//   const playerI = Math.floor((playerPos.lat - NULL_ISLAND.lat) / TILE_DEGREES);
+//   const playerJ = Math.floor((playerPos.lng - NULL_ISLAND.lng) / TILE_DEGREES);
 
-function regenerateCachesAround(playerPos: leaflet.LatLng) {
-  map.eachLayer((layer: L.Layer) => {
-    if (layer instanceof leaflet.Rectangle) {
-      map.removeLayer(layer);
-    }
-  });
+//   for (
+//     let i = playerI - NEIGHBORHOOD_SIZE;
+//     i <= playerI + NEIGHBORHOOD_SIZE;
+//     i++
+//   ) {
+//     for (
+//       let j = playerJ - NEIGHBORHOOD_SIZE;
+//       j <= playerJ + NEIGHBORHOOD_SIZE;
+//       j++
+//     ) {
+//       const key = `${i},${j}`;
 
-  const playerI = Math.floor((playerPos.lat - NULL_ISLAND.lat) / TILE_DEGREES);
-  const playerJ = Math.floor((playerPos.lng - NULL_ISLAND.lng) / TILE_DEGREES);
+//       if (cacheMap.has(key)) {
+//         const cache = cacheMap.get(key)!;
+//         if (cache.memento) {
+//           cache.restoreState(cache.memento);
+//         }
+//         spawnCache(i, j);
+//       } else if (Math.random() < CACHE_SPAWN_PROBABILITY) {
+//         spawnCache(i, j);
+//       }
+//     }
+//   }
 
-  for (
-    let i = playerI - NEIGHBORHOOD_SIZE;
-    i <= playerI + NEIGHBORHOOD_SIZE;
-    i++
-  ) {
-    for (
-      let j = playerJ - NEIGHBORHOOD_SIZE;
-      j <= playerJ + NEIGHBORHOOD_SIZE;
-      j++
-    ) {
-      const key = `${i},${j}`;
-
-      if (cacheMap.has(key)) {
-        const cache = cacheMap.get(key)!;
-        if (cache.memento) {
-          cache.restoreState(cache.memento);
-        }
-        spawnCache(i, j);
-      } else if (Math.random() < CACHE_SPAWN_PROBABILITY) {
-        spawnCache(i, j);
-      }
-    }
-  }
-
-  cacheMap.forEach((cache, key) => {
-    const cacheLatLng = locationFactory.getLocation(
-      NULL_ISLAND.lat + cache.i * TILE_DEGREES,
-      NULL_ISLAND.lng + cache.j * TILE_DEGREES,
-    );
-    if (
-      playerPos.distanceTo(cacheLatLng) > TILE_DEGREES * NEIGHBORHOOD_SIZE * 2
-    ) {
-      cache.saveState();
-      cacheMap.delete(key);
-    }
-  });
-}
+//   cacheMap.forEach((cache, key) => {
+//     const cacheLatLng = locationFactory.getLocation(
+//       NULL_ISLAND.lat + cache.i * TILE_DEGREES,
+//       NULL_ISLAND.lng + cache.j * TILE_DEGREES,
+//     );
+//     if (
+//       playerPos.distanceTo(cacheLatLng) > TILE_DEGREES * NEIGHBORHOOD_SIZE * 2
+//     ) {
+//       cache.saveState();
+//       cacheMap.delete(key);
+//     }
+//   });
+// }
 
 // Button definitions for controlling movement
 
